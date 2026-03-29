@@ -1,0 +1,294 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.SignalR.Client
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<!-- Username Modal -->
+<div id="usernameModal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+    <div style="background: white; padding: 30px; border-radius: 10px; width: 400px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+        <h2>📝 Welcome to Collaborative Notes</h2>
+        <p style="color: #666; margin: 10px 0;">Enter your name to join the real-time collaboration:</p>
+        <input type="text" id="usernameInput" placeholder="Your name" autocomplete="off" style="width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 5px; font-size: 16px;" />
+        <button id="joinBtn" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;">🚀 Join Session</button>
+        <p style="font-size: 12px; color: #999; margin-top: 10px;">Your name will be saved for future sessions</p>
+    </div>
+</div>
+
+<div style="padding: 20px; font-family: Arial, sans-serif;">
+    <div style="background: #f0f2f5; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h1 style="margin: 0;">📝 Collaborative Notes</h1>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="background: #007bff; color: white; padding: 5px 15px; border-radius: 20px;">
+                    👤 <span id="displayUserName">Loading...</span>
+                </span>
+                <button onclick="changeUserName()" style="padding: 5px 10px; background: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer;">✏️ Change Name</button>
+            </div>
+        </div>
+        <div style="margin-top: 10px;">
+            <div style="background: #e3f2fd; padding: 5px 15px; border-radius: 20px; display: inline-block;">
+                👥 Active Users: <span id="activeUsersList">@string.Join(", ", activeUsers)</span>
+            </div>
+            <div style="margin-top: 10px;">
+                <span id="connectionStatus" style="color: @(isConnected ? "green" : "red"); font-weight: bold;">
+                    @(isConnected ? "🟢 CONNECTED" : "🔴 DISCONNECTED")
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Typing Indicator -->
+    <div id="typingIndicator" style="background: #fff3cd; padding: 8px 15px; border-radius: 8px; margin-bottom: 10px; display: none; border-left: 4px solid #ffc107;">
+        <span>✏️ <span id="typingUsers"></span> <span id="typingText">is typing...</span></span>
+    </div>
+
+    <div style="background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+        <div style="padding: 10px; background: #f8f9fa; border-bottom: 1px solid #ddd;">
+            <button onclick="sendTestMessage()" style="padding: 8px 16px; margin-right: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">📨 Send Test Message</button>
+            <button onclick="clearText()" style="padding: 8px 16px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">🗑️ Clear</button>
+        </div>
+
+        <input type="text"
+               id="messageInput"
+               style="width: 100%; padding: 15px; font-size: 16px; border: none; border-top: 1px solid #ddd; outline: none;"
+               placeholder="Start typing here..." />
+
+        <div style="padding: 15px; background: #f8f9fa; border-top: 1px solid #ddd; min-height: 200px;">
+            <strong>📨 Activity Feed:</strong>
+            <div id="messagesList" style="margin-top: 10px;"></div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+<script>
+    let connection;
+    let userName = "";
+    let activeUsersList = [];
+    let typingUsers = new Set();
+
+    function addActivity(user, content) {
+        const messagesDiv = document.getElementById('messagesList');
+        messagesDiv.innerHTML = `<div><strong>${user}:</strong> ${content}</div>` + messagesDiv.innerHTML;
+        if (messagesDiv.children.length > 30) {
+            messagesDiv.removeChild(messagesDiv.lastChild);
+        }
+    }
+
+    function updateActiveUsers(users) {
+        activeUsersList = users;
+        const activeSpan = document.getElementById('activeUsersList');
+        if (activeSpan) {
+            activeSpan.innerText = users.join(", ");
+        }
+    }
+
+    function updateTypingIndicator() {
+        const indicator = document.getElementById('typingIndicator');
+        const typingUsersSpan = document.getElementById('typingUsers');
+        const typingTextSpan = document.getElementById('typingText');
+
+        if (typingUsers.size === 0) {
+            indicator.style.display = 'none';
+            return;
+        }
+
+        indicator.style.display = 'block';
+        const users = Array.from(typingUsers);
+
+        if (users.length === 1) {
+            typingUsersSpan.innerText = users[0];
+            typingTextSpan.innerText = 'is typing...';
+        } else if (users.length === 2) {
+            typingUsersSpan.innerText = `${users[0]} and ${users[1]}`;
+            typingTextSpan.innerText = 'are typing...';
+        } else {
+            typingUsersSpan.innerText = `${users.length} people`;
+            typingTextSpan.innerText = 'are typing...';
+        }
+    }
+
+    function removeTypingUser(user) {
+        if (typingUsers.has(user)) {
+            typingUsers.delete(user);
+            updateTypingIndicator();
+        }
+    }
+
+    async function sendMessage(content) {
+        if (connection && connection.state === signalR.HubConnectionState.Connected) {
+            console.log(`📤 SENDING from ${userName}: "${content}"`);
+            await connection.invoke("UpdateNote", "demo", content, userName);
+        }
+    }
+
+    async function sendTyping(isTyping) {
+        if (connection && connection.state === signalR.HubConnectionState.Connected) {
+            await connection.invoke("Typing", "demo", userName, isTyping);
+        }
+    }
+
+    window.sendTestMessage = async function() {
+        const testMsg = `📝 Test message from ${userName}`;
+        document.getElementById('messageInput').value = testMsg;
+        await sendMessage(testMsg);
+    };
+
+    window.clearText = async function() {
+        document.getElementById('messageInput').value = "";
+        await sendMessage("");
+    };
+
+    window.changeUserName = async function() {
+        let newName = prompt("Enter your new name:", userName);
+        if (newName && newName.trim() !== "") {
+            localStorage.setItem("collab_username", newName);
+            userName = newName;
+            document.getElementById('displayUserName').innerHTML = userName;
+            addActivity("System", `${userName} changed their name`);
+            // Re-join with new name
+            await connection.invoke("JoinNote", "demo", userName);
+        }
+    };
+
+    function showUsernameModal() {
+        return new Promise((resolve) => {
+            const modal = document.getElementById('usernameModal');
+            const input = document.getElementById('usernameInput');
+            const joinBtn = document.getElementById('joinBtn');
+
+            let stored = localStorage.getItem("collab_username");
+            if (stored && stored.trim() !== "") {
+                modal.style.display = 'none';
+                resolve(stored);
+                return;
+            }
+
+            joinBtn.onclick = () => {
+                let name = input.value.trim();
+                if (name === "") {
+                    name = "Guest_" + Math.floor(Math.random() * 1000);
+                }
+                localStorage.setItem("collab_username", name);
+                modal.style.display = 'none';
+                resolve(name);
+            };
+
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') joinBtn.click();
+            });
+
+            input.focus();
+        });
+    }
+
+    async function startSignalR() {
+        userName = await showUsernameModal();
+        document.getElementById('displayUserName').innerHTML = userName;
+
+        console.log(`🚀 Starting as ${userName}...`);
+
+        connection = new signalR.HubConnectionBuilder()
+            .withUrl("/noteshub")
+            .withAutomaticReconnect()
+            .build();
+
+        connection.on("NoteUpdated", (update) => {
+            const content = update.content;
+            const updatedBy = update.userName;
+            console.log(`📥 RECEIVED from ${updatedBy}: "${content}"`);
+
+            if (updatedBy !== userName) {
+                document.getElementById('messageInput').value = content;
+                addActivity(updatedBy, content);
+            }
+            removeTypingUser(updatedBy);
+        });
+
+        connection.on("UserTyping", (typingInfo) => {
+            const typingUser = typingInfo.userName;
+            const isTyping = typingInfo.isTyping;
+
+            if (typingUser !== userName) {
+                if (isTyping) {
+                    if (!typingUsers.has(typingUser)) {
+                        typingUsers.add(typingUser);
+                        updateTypingIndicator();
+                        setTimeout(() => {
+                            removeTypingUser(typingUser);
+                        }, 2000);
+                    }
+                } else {
+                    removeTypingUser(typingUser);
+                }
+            }
+        });
+
+        connection.on("UserJoined", (joinedUser) => {
+            console.log(`🎉 ${joinedUser} joined!`);
+            addActivity("System", `${joinedUser} joined the session`);
+        });
+
+        connection.on("ActiveUsers", (users) => {
+            console.log(`👥 Active users: ${users.join(", ")}`);
+            updateActiveUsers(users);
+        });
+
+        try {
+            await connection.start();
+            console.log(`✅ Connected!`);
+            document.getElementById('connectionStatus').innerHTML = "🟢 CONNECTED";
+            document.getElementById('connectionStatus').style.color = "green";
+
+            await connection.invoke("JoinNote", "demo", userName);
+            console.log(`✅ Joined "demo" note`);
+
+            addActivity("System", `Welcome ${userName}! You're now collaborating in real-time.`);
+
+        } catch (err) {
+            console.log(`❌ Error: ${err.message}`);
+            document.getElementById('connectionStatus').innerHTML = "🔴 DISCONNECTED";
+            document.getElementById('connectionStatus').style.color = "red";
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        startSignalR();
+
+        const input = document.getElementById('messageInput');
+        let debounceTimer;
+        let typingDebounceTimer;
+
+        input.addEventListener('input', (e) => {
+            const content = e.target.value;
+
+            clearTimeout(typingDebounceTimer);
+            sendTyping(true);
+
+            typingDebounceTimer = setTimeout(() => {
+                sendTyping(false);
+            }, 1000);
+
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                sendMessage(content);
+            }, 300);
+        });
+
+        input.addEventListener('blur', () => {
+            sendTyping(false);
+        });
+    });
+</script>
+
+@code {
+    private bool isConnected = false;
+    private List<string> activeUsers = new();
+    private string userName = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.CompletedTask;
+    }
+}

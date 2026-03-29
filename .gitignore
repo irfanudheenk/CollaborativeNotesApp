@@ -1,0 +1,33 @@
+﻿## .NET Core
+bin/
+obj/
+*.user
+*.userosscache
+*.vs/
+.vs/
+
+## Database files
+*.db
+*.sqlite
+*.sqlite3
+Migrations/
+
+## IDE
+.vscode/
+.idea/
+*.suo
+*.userprefs
+
+## Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+build/
+bld/
+
+## Logs
+*.log
+*.logs
